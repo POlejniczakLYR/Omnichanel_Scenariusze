@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>Model Omnichannel — scenariusze i algorytm tagowania</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 20mm 16mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-size: 10.5pt; line-height: 1.5; color: #1a1a1a; margin: 0;
+  }
+  h1 { font-size: 22pt; margin: 0 0 4px; color: #0b4f6c; }
+  h2 { font-size: 14pt; margin: 26px 0 8px; color: #0b4f6c; border-bottom: 2px solid #0b4f6c; padding-bottom: 3px; }
+  h3 { font-size: 11.5pt; margin: 16px 0 4px; color: #12729b; }
+  p { margin: 6px 0; }
+  .subtitle { color: #555; font-size: 11pt; margin-top: 0; }
+  .meta { color: #777; font-size: 9pt; margin-bottom: 8px; }
+  code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 9pt; background: #f0f3f5; padding: 1px 4px; border-radius: 3px; }
+  pre { background: #0f2b38; color: #e8f1f5; padding: 10px 12px; border-radius: 6px; font-family: "SFMono-Regular", Consolas, monospace; font-size: 8pt; line-height: 1.4; overflow-x: auto; white-space: pre-wrap; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 9pt; }
+  th, td { border: 1px solid #cdd7dd; padding: 5px 7px; text-align: left; vertical-align: top; }
+  th { background: #e3edf2; color: #0b4f6c; font-weight: 600; }
+  tr:nth-child(even) td { background: #f6f9fb; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 8pt; font-weight: 600; }
+  .ok { background: #d7f0dd; color: #1a6b34; }
+  .todo { background: #ffe6c7; color: #9a5a08; }
+  .core { background: #dbe9fb; color: #14477e; }
+  .overlay { background: #efe0f6; color: #6b2b8f; }
+  .box { background: #f6f9fb; border-left: 4px solid #12729b; padding: 8px 12px; margin: 10px 0; border-radius: 0 4px 4px 0; }
+  .box.warn { border-left-color: #d98a00; background: #fff8ee; }
+  .scen { border: 1px solid #cdd7dd; border-radius: 6px; padding: 10px 14px; margin: 12px 0; page-break-inside: avoid; }
+  .scen h3 { margin-top: 0; }
+  .rule { background: #0f2b38; color: #e8f1f5; padding: 8px 10px; border-radius: 5px; font-family: "SFMono-Regular", Consolas, monospace; font-size: 8.5pt; margin: 6px 0; white-space: pre-wrap; }
+  ul { margin: 6px 0; padding-left: 20px; }
+  li { margin: 2px 0; }
+  .pill-row { margin: 4px 0 8px; }
+  footer { margin-top: 20px; padding-top: 8px; border-top: 1px solid #ccc; color: #888; font-size: 8pt; }
+  .nobreak { page-break-inside: avoid; }
+</style>
+</head>
+<body>
+
+<h1>Model Omnichannel — scenariusze i algorytm tagowania</h1>
+<p class="subtitle">Segmentacja klientów M1–M7 na danych Lyreco PL (HALO / Oracle)</p>
+<p class="meta">Dokument roboczy · przygotowano 2026-07-03 · podejście multi-tag (klient może należeć do wielu segmentów)</p>
+
+<h2>1. Cel i zasada działania modelu</h2>
+<p>Model przypisuje każdego klienta (<code>SOLD TO</code>) do jednego lub wielu <strong>scenariuszy działania omnichannel</strong> (M1–M7). Wynik to jeden wiersz na klienta z kolumnami-tagami <code>M1 … M7</code> o wartości <strong>TAK/NIE</strong> (lub <code>DO_UZUPELNIENIA</code>, gdy brakuje danych źródłowych).</p>
+<div class="box">
+  <strong>Podejście multi-tag.</strong> Klient może mieć kilka tagów naraz. Rozróżniamy:
+  <ul>
+    <li><span class="tag core">RDZEŃ</span> — M1, M2, M2A, M3 (dla SMB: IS/PF/MM) oraz M4 (Corporate). Z założenia rozłączne: klient trafia do jednego z nich.</li>
+    <li><span class="tag overlay">NAKŁADKI</span> — M5 (price fighter), M6 (churn), M7 (vertical). Mogą współwystępować z dowolnym scenariuszem rdzeniowym.</li>
+  </ul>
+</div>
+
+<h2>2. Źródła danych i filtry</h2>
+<table>
+  <tr><th>Obszar</th><th>Tabela / kolumny HALO</th><th>Do czego</th></tr>
+  <tr><td>Sprzedaż, marża, kanał</td><td><code>POLAND.T_INVOICE_LINE</code> — SALES_AMOUNT, MARGIN_AMOUNT, ORDER_CHANNEL_CODE, ECOM_USER_ID, ORDER_NUMBER, INVOICE_DATE</td><td>LTV, marża, AOV, self-service</td></tr>
+  <tr><td>Sekcje (kategorie)</td><td><code>POLAND.T_PRODUCT</code>.SECTION_CODE → <code>T_SECTION_NAME</code></td><td>śr. sekcji / zamówienie, liczba unikalnych sekcji</td></tr>
+  <tr><td>Typ konta eCOM</td><td><code>POLAND.T_ECOM_ACCOUNT</code>.USER_TYPE_CODE</td><td>rozpoznanie OLO (klient samodzielnie)</td></tr>
+  <tr><td>Segment / region</td><td><code>POLAND.T_SOLDTO</code> — SALES_FORCE_REGION_CODE, SALES_FORCE_TYPE_CODE, PAYER_NUMBER</td><td>IS/PF/MM, Corporate</td></tr>
+  <tr><td>Zatrudnienie</td><td><code>POLAND.T_SHIPTO</code> — NUMBER_OF_WHITE_COLLARS, NUMBER_OF_BLUE_COLLARS (wiersz self-shipto: SHIPTO_NUMBER = SOLDTO_NUMBER)</td><td>kwalifikacja MidMarket (0–249)</td></tr>
+  <tr><td>PKD (branża)</td><td><code>POLAND.T_PAYER</code>.TAX_NUMBER1 → <code>WORK_POLAND.T_CEIDG_GUS</code>.PKD_KOD</td><td>M7 / M3 (branża)</td></tr>
+</table>
+<div class="box">
+  <strong>Filtry standardowe (zawsze):</strong> <code>COUNTRY_CODE = 'PL'</code> · <code>NVL(CANCELLED_FLAG,'N') &lt;&gt; 'Y'</code> · <code>NVL(DL_DELETION_FLAG,'N') &lt;&gt; 'Y'</code> · <code>BUSINESS_SCOPE_FLAG = 'Y'</code> · okno <strong>rolling 12 miesięcy</strong> po <code>INVOICE_DATE</code> (<code>INVOICE_DATE &gt;= ADD_MONTHS(TRUNC(SYSDATE), -12)</code>).
+</div>
+
+<h2>3. Definicje metryk (jak liczymy)</h2>
+<table>
+  <tr><th>Metryka</th><th>Definicja</th></tr>
+  <tr><td><code>sales_amount_12m</code></td><td>Suma <code>SALES_AMOUNT</code> ze wszystkich linii faktur klienta w 12m (zafakturowana sprzedaż).</td></tr>
+  <tr><td><code>margin_amount_12m</code></td><td>Suma <code>MARGIN_AMOUNT</code> w 12m.</td></tr>
+  <tr><td><code>orders_12m</code></td><td>Liczba unikalnych zamówień: <code>COUNT(DISTINCT ORDER_NUMBER + ORDER_DATE)</code> (tylko linie z <code>ORDER_NUMBER</code>).</td></tr>
+  <tr><td><code>aov</code></td><td>Średnia wartość zamówienia = <code>sales_amount_12m / orders_12m</code>.</td></tr>
+  <tr><td><code>pct_self_service</code></td><td>Udział zamówień samodzielnych. Zamówienie jest „self-service", gdy ma linię w kanale <code>ORDER_CHANNEL_CODE IN ('W','X')</code> i konto eCOM <code>USER_TYPE_CODE = 'OLO'</code>. Liczone na poziomie zamówienia: <code>zamówienia OLO / wszystkie zamówienia</code>.</td></tr>
+  <tr><td><code>avg_sections_per_order</code></td><td>Średnia liczba różnych sekcji (kategorii) przypadająca na zamówienie.</td></tr>
+  <tr><td><code>distinct_sections_12m</code></td><td>Liczba różnych sekcji kupionych w całym okresie 12m (do M7 — „kupuje 1 kategorię").</td></tr>
+  <tr><td><code>employees</code></td><td>Zatrudnienie = <code>NUMBER_OF_WHITE_COLLARS + NUMBER_OF_BLUE_COLLARS</code> z wiersza <code>T_SHIPTO</code>, gdzie <code>SHIPTO_NUMBER = SOLDTO_NUMBER</code> (self-shipto, bez sumowania po wszystkich SHIPTO klienta).</td></tr>
+  <tr><td><code>region_threshold_aov</code></td><td>Próg opłacalności = <strong>średnia AOV w regionie</strong> (osobno dla IS, PF, MM), liczona <strong>tylko po klientach kwalifikujących się</strong> do rdzenia SMB: <code>AVG(CASE WHEN is_smb_eligible THEN aov END) OVER (PARTITION BY SALES_FORCE_REGION_CODE)</code>.</td></tr>
+</table>
+<div class="box warn">
+  <strong>Dlaczego dwie agregacje?</strong> Faktura ≠ zamówienie. Sprzedaż i marża liczymy ze <em>wszystkich</em> linii faktur (pełne LTV). Liczbę zamówień, sekcje i % self-service liczymy na <em>poziomie zamówienia</em> (tylko linie z <code>ORDER_NUMBER</code>). Dlatego kod ma osobne kroki <code>cust_totals</code> i <code>order_level</code>.
+</div>
+
+<h2>4. Mapowania kodów</h2>
+<table>
+  <tr><th>Pole</th><th>Wartość</th><th>Znaczenie</th></tr>
+  <tr><td rowspan="3"><code>SALES_FORCE_REGION_CODE</code></td><td>1603</td><td>IS — Inside Sales</td></tr>
+  <tr><td>1601</td><td>PF — Prospection Force</td></tr>
+  <tr><td>1605</td><td>MM — Mid Market</td></tr>
+  <tr><td><code>SALES_FORCE_TYPE_CODE</code></td><td>CORPORATE</td><td>segment M4 (Corporate Accounts)</td></tr>
+  <tr><td rowspan="4"><code>USER_TYPE_CODE</code></td><td>OLO</td><td>klient samodzielnie (liczy się jako self-service)</td></tr>
+  <tr><td>REP</td><td>Doradca Biznesowy</td></tr>
+  <tr><td>DC</td><td>Katalog Dynamiczny</td></tr>
+  <tr><td>CSO</td><td>Customer Care</td></tr>
+</table>
+
+<h2>5. Kwalifikacja do rdzenia SMB (M1–M3) — zatrudnienie</h2>
+<p>Rdzeń SMB (M1, M2, M2A, M3) dotyczy segmentów IS/PF/MM, ale z różnym progiem wejścia:</p>
+<table>
+  <tr><th>Segment</th><th>Kod regionu</th><th>Warunek wejścia</th></tr>
+  <tr><td>IS — Inside Sales</td><td>1603</td><td>cały segment (bez filtra zatrudnienia)</td></tr>
+  <tr><td>PF — Prospection Force</td><td>1601</td><td>cały segment (bez filtra zatrudnienia)</td></tr>
+  <tr><td>MM — Mid Market</td><td>1605</td><td><strong>tylko zatrudnienie 0–249</strong> (white + blue collars)</td></tr>
+</table>
+<div class="rule">is_smb_eligible = TAK gdy:
+    region ∈ {1601, 1603}                              (IS, PF — zawsze)
+    LUB (region = 1605 AND employees ∈ &lt;0 ; 249&gt;)     (MM — tylko małe/średnie)</div>
+<div class="box warn">
+  <strong>Skąd zatrudnienie:</strong> z wiersza <code>T_SHIPTO</code>, gdzie <code>SHIPTO_NUMBER = SOLDTO_NUMBER</code> (dane są na poziomie SHIPTO, ale bierzemy tylko self-shipto — <em>nie sumujemy</em> po wszystkich lokalizacjach klienta).<br>
+  <strong>Nieznane zatrudnienie</strong> (<code>Not Assigned</code> / NULL) przez <code>NVL(...,0)</code> wpada w przedział 0–249, czyli <strong>kwalifikuje się</strong> (do potwierdzenia — można odwrócić).
+</div>
+
+<h2>6. Scenariusze i algorytm TAK/NIE</h2>
+<p>Dla każdego klienta liczony jest zestaw metryk z sekcji 3, a następnie każdy tag to warunek logiczny (<code>CASE WHEN … THEN 'TAK' ELSE 'NIE'</code>). Poniżej cel biznesowy i dokładna reguła.</p>
+
+<div class="scen">
+  <h3>M1 — Digital Self-Service Scale <span class="tag core">rdzeń</span> <span class="tag ok">gotowe</span></h3>
+  <p><strong>Cel:</strong> generowanie skali TOP LINE i pozyskiwanie nowych klientów przy minimalnej rentowności; klienci „wejściowi", których chcemy usamodzielnić.</p>
+  <p><strong>Reguła TAK:</strong></p>
+  <div class="rule">is_smb_eligible = TAK  (IS/PF całość; MM tylko 0–249 prac.)
+AND  aov &lt; region_threshold_aov   (poniżej średniej AOV swojego regionu)</div>
+  <p><strong>Podtag:</strong> <code>ONLY_DIGITAL</code> gdy <code>pct_self_service = 100%</code>, w przeciwnym razie <code>POZOSTALI</code>.</p>
+</div>
+
+<div class="scen">
+  <h3>M2 — Assisted Digital Adoption <span class="tag core">rdzeń</span> <span class="tag ok">gotowe</span></h3>
+  <p><strong>Cel:</strong> silnik zwiększania zysku w SMB; klienci z potencjałem digital, ale niepełną adopcją — wymagają wsparcia w onboardingu.</p>
+  <p><strong>Reguła TAK:</strong></p>
+  <div class="rule">is_smb_eligible = TAK
+AND  aov &gt;= region_threshold_aov         (powyżej progu)
+AND  pct_self_service ∈ &lt;1% ; 90%&gt;
+AND  avg_sections_per_order &gt; 3,3</div>
+</div>
+
+<div class="scen">
+  <h3>M2A — Assisted Digital Adoption (wysoka adopcja) <span class="tag core">rdzeń</span> <span class="tag ok">gotowe</span></h3>
+  <p><strong>Cel:</strong> główny generator zysku w SMB — klienci profitowi, niemal w pełni samodzielni; docelowy stan rozwoju klienta.</p>
+  <p><strong>Reguła TAK:</strong></p>
+  <div class="rule">is_smb_eligible = TAK
+AND  aov &gt;= region_threshold_aov
+AND  pct_self_service &gt;= 91%
+AND  avg_sections_per_order &gt; 3,3</div>
+</div>
+
+<div class="scen">
+  <h3>M3 — Expert Advisory Expansion <span class="tag core">rdzeń</span> <span class="tag todo">do uzupełnienia</span></h3>
+  <p><strong>Cel:</strong> rozwój portfolio przez doradztwo — klienci profitowi kupujący wąsko (poniżej średniej sekcji), z potencjałem szerszego koszyka.</p>
+  <p><strong>Reguła TAK (obecnie):</strong></p>
+  <div class="rule">is_smb_eligible = TAK
+AND  aov &gt;= region_threshold_aov
+AND  avg_sections_per_order &lt;= 3,3</div>
+  <div class="box warn"><strong>Brakuje:</strong> kryterium „PKD sugeruje możliwość szerszego zakupu" — wymaga mapy PKD → oczekiwane kategorie. Do czasu ustalenia M3 obejmuje wszystkich wąsko kupujących profitowych SMB.</div>
+</div>
+
+<div class="scen">
+  <h3>M4 — Strategic Contract &amp; Retention <span class="tag core">rdzeń</span> <span class="tag ok">gotowe</span></h3>
+  <p><strong>Cel:</strong> obsługa klientów strategicznych/kontraktowych zgodnie ze strategią Corporate Accounts (kontrola kosztów, SLA, ciągłość).</p>
+  <p><strong>Reguła TAK:</strong></p>
+  <div class="rule">SALES_FORCE_TYPE_CODE = 'CORPORATE'</div>
+  <div class="box warn"><strong>Do potwierdzenia:</strong> czy 'CORPORATE' to pełna definicja CA, czy istnieją osobne kody regionów dla Corporate (analogicznie do 1601/1603/1605).</div>
+</div>
+
+<div class="scen">
+  <h3>M5 — Price Fighter / Marketplace Defense <span class="tag overlay">nakładka</span> <span class="tag todo">do uzupełnienia</span></h3>
+  <p><strong>Cel:</strong> utrzymanie TOP LINE i udziału w rynku wobec klientów silnie wrażliwych na cenę (kupują okazjinie KVI: papier, woda, rękawice itd.).</p>
+  <p><strong>Reguła docelowa:</strong> udział produktów KVI w koszyku ≥ próg X%.</p>
+  <div class="box warn"><strong>Blokada:</strong> brak listy KVI w BI oraz progu % kwalifikującego. Tag zwraca <code>DO_UZUPELNIENIA</code>.</div>
+</div>
+
+<div class="scen">
+  <h3>M6 — Recovery / Churn Prevention <span class="tag overlay">nakładka</span> <span class="tag todo">do uzupełnienia</span></h3>
+  <p><strong>Cel:</strong> odzyskiwanie klientów ze spadkiem aktywności (anti-churn: churn score 70–94 kampania digital; churn 95+ akcja DB).</p>
+  <div class="box warn"><strong>Status:</strong> tabelę <code>T_ANTICHURN</code> tymczasowo wyłączono (wiele snapshotów na klienta powodowało zwielokrotnienie wierszy). Wymaga ustalenia źródła churn score i sposobu odświeżania (tygodniowo, zgodnie z NBA). Tag zwraca <code>DO_UZUPELNIENIA</code>.</div>
+</div>
+
+<div class="scen">
+  <h3>M7 — Specialist Vertical Solution <span class="tag overlay">nakładka</span> <span class="tag todo">do uzupełnienia</span></h3>
+  <p><strong>Cel:</strong> klienci z branż wymagających PPE / hygiene / facility (przemysł ciężki, produkcja, logistyka, budownictwo, HoReCa), kupujący dziś wąsko — potencjał specjalizacji.</p>
+  <p><strong>Reguła docelowa:</strong> <code>distinct_sections_12m = 1</code> ORAZ PKD ∈ lista branż docelowych.</p>
+  <div class="box warn"><strong>Brakuje:</strong> mapa PKD → branża docelowa. Mamy już <code>distinct_sections_12m</code> i <code>PKD_KOD</code>; tag zwraca <code>DO_UZUPELNIENIA</code> gdy <code>distinct_sections_12m = 1</code>.</div>
+</div>
+
+<h2>7. Znane luki i decyzje modelowe</h2>
+<ul>
+  <li><strong>Próg = średnia AOV regionu.</strong> Z definicji ~połowa klientów regionu wpada do M1 (poniżej średniej). Jeśli potrzebny twardszy próg — mediana / dolny kwartyl / koszt-to-serve (zmiana w jednej linii).</li>
+  <li><strong>Luka rdzenia:</strong> profitowy klient SMB z <code>pct_self_service = 0%</code> i <code>avg_sections &gt; 3,3</code> nie łapie ani M2 (wymaga ≥1%), ani M3 (wymaga ≤3,3 sekcji) — dostaje same NIE w rdzeniu. Do decyzji, gdzie go przypisać.</li>
+  <li><strong>Faktury bez <code>ORDER_NUMBER</code></strong> (korekty, faktury ręczne) wchodzą do sprzedaży/marży, ale nie do licznika zamówień → AOV może być lekko zawyżone.</li>
+  <li><strong>MidMarket &gt;249 pracowników</strong> jest wykluczany z rdzenia SMB (M1–M3); MM z nieznanym zatrudnieniem obecnie kwalifikuje się (NVL→0) — do potwierdzenia.</li>
+  <li><strong>Deduplikacja:</strong> źródła z historią (np. CEIDG wiele PKD/NIP) są sprowadzane do 1 wiersza na klucz (<code>ROW_NUMBER … rn=1</code>), żeby nie mnożyć wierszy klienta.</li>
+</ul>
+
+<h2>8. Podsumowanie statusu tagów</h2>
+<table>
+  <tr><th>Tag</th><th>Typ</th><th>Status</th><th>Czego brakuje</th></tr>
+  <tr><td>M1</td><td>rdzeń</td><td>✅ gotowe</td><td>—</td></tr>
+  <tr><td>M2 / M2A</td><td>rdzeń</td><td>✅ gotowe</td><td>—</td></tr>
+  <tr><td>M3</td><td>rdzeń</td><td>⚠️ częściowe</td><td>kryterium „PKD szerszy zakup"</td></tr>
+  <tr><td>M4</td><td>rdzeń</td><td>✅ gotowe</td><td>potwierdzenie definicji CA</td></tr>
+  <tr><td>M5</td><td>nakładka</td><td>⛔ blokada</td><td>lista KVI + próg %</td></tr>
+  <tr><td>M6</td><td>nakładka</td><td>⛔ blokada</td><td>źródło churn score, cykl odświeżania</td></tr>
+  <tr><td>M7</td><td>nakładka</td><td>⚠️ częściowe</td><td>mapa PKD → branża</td></tr>
+</table>
+
+<footer>
+Model Omnichannel · dokument roboczy · dane: HALO_ANALYSE_POWERBI_PROD (Oracle: POLAND / SHARED / WORK_POLAND) · okno rolling 12M
+</footer>
+
+</body>
+</html>
